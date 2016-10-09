@@ -3,40 +3,61 @@
 #               HTTP PROXY                          *
 #               Version: 1.0                        *
 #               Author: Luu Gia Thuy                *
-#                                                   *
+#       Modified Ian haywood 2016                                        *
 #****************************************************
 
-import os,sys,thread,socket
+import os,sys,socket,select,urlparse,ssl,os.path, thread
 
 #********* CONSTANT VARIABLES *********
+
+# port the proxy runs on
+PORT=8080
+# path for the CA certificates and cache of fake certs for HTTPS sites.
+# will be created if doesn't exist
+CERTS_PATH=os.path.expanduser("~/certs")
+ 
 BACKLOG = 50            # how many pending connections queue will hold
 MAX_DATA_RECV = 999999  # max number of bytes we receive at once
-DEBUG = True            # set to True to see the debug msgs
-BLOCKED = []            # just an example. Remove with [""] for no blocking at all.
+BAN_HEADERS=['accept-encoding','connection']
+
+
+# create, if required, fake SSL cert for this site
+def create_cert(hostname):
+    base = os.path.join(CERTS_PATH,hostname)
+    cert = base+".pem"
+    key = base+".key"
+    if os.path.exists(cert):
+        return (cert,key)
+    if not os.path.exists(CERTS_PATH):
+        os.mkdir(CERTS_PATH)
+    olddir = os.getcwd()
+    os.chdir(CERTS_PATH)
+    if not os.path.exists(os.path.join(CERTS_PATH,"ca.pem")):
+        # openssl voodoo to become our own CA
+        # the CA certificate "ca.pem" will need to be imported into the browser for this to really work
+        os.system("echo 1000 > serial")
+        os.system("touch index.txt")
+        os.system("openssl req -new -x509 -days 3650 -nodes -extensions v3_ca -subj '/C=AU/ST=Freedonia/L=Nowhere/O=THIS CERT IS FAKE/CN=localhost' -keyout ca.key -out ca.pem")
+    # generate fake cert for this site.
+    os.system("openssl req -new -nodes -keyout {0}.key -out {0}.req -subj '/C=AU/ST=Freedonia/L=Nowhere/O=THIS CERT IS FAKE/CN={0}'".format(hostname))
+    os.system("openssl ca -batch -days 3650 -outdir {1} -cert {1}/ca.pem -config /etc/ssl/openssl.cnf -out {0}.pem1 -infiles {0}.req".format(hostname,CERTS_PATH))
+    os.system("cat {0}.pem1 ca.pem > {0}.pem".format(hostname))
+    os.chdir(olddir)
+    return (cert,key)
+
 
 #**************************************
 #********* MAIN PROGRAM ***************
 #**************************************
 def main():
 
-    # check the length of command running
-    if (len(sys.argv)<2):
-        print "No port given, using :8080 (http-alt)" 
-        port = 8080
-    else:
-        port = int(sys.argv[1]) # port from argument
-
-    # host and port info.
-    host = ''               # blank for localhost
-    
-    print "Proxy Server Running on ",host,":",port
+    print "Proxy Server Running on ",PORT
 
     try:
         # create a socket
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
         # associate the socket to host and port
-        s.bind((host, port))
+        s.bind(("", PORT))
 
         # listenning
         s.listen(BACKLOG)
@@ -46,100 +67,113 @@ def main():
             s.close()
         print "Could not open socket:", message
         sys.exit(1)
-
+    counter = 1
     # get the connection from client
     while 1:
+        counter += 1
         conn, client_addr = s.accept()
-
-        # create a thread to handle request
-        thread.start_new_thread(proxy_thread, (conn, client_addr))
-        
+        thread.start_new_thread(serve_conn,(conn, client_addr, counter))
     s.close()
 #************** END MAIN PROGRAM ***************
 
-def printout(type,request,address):
-    if "Block" in type or "Blacklist" in type:
-        colornum = 91
-    elif "Request" in type:
-        colornum = 92
-    elif "Reset" in type:
-        colornum = 93
 
-    print "\033[",colornum,"m",address[0],"\t",type,"\t",request,"\033[0m"
 
-#*******************************************
-#********* PROXY_THREAD FUNC ***************
-# A thread to handle request from browser
-#*******************************************
-def proxy_thread(conn, client_addr):
+CONNECT_REPLY=b"HTTP/1.1 200 Connectioln established\r\nProxy-Agent: proxy.py\r\n\r\n"
+
+def filter_headers(headers):
+    newheader = [headers[0]]
+    for i in headers[1:]:
+        fields = i.split(':', 1)
+        field = fields[0].lower()
+        if not field in BAN_HEADERS:
+            newheader.append(i)
+        if field == "connection":
+            newheader.append("Connection: close")
+    return "\r\n".join(newheader)  
+
+def serve_conn(conn, client_addr, counter):
+
+    # set up tracking files
+    fd_client = open("%03d.client" % counter,"w")
+    fd_server = open("%03d.server" % counter,"w")
 
     # get the request from browser
     request = conn.recv(MAX_DATA_RECV)
-
     # parse the first line
-    first_line = request.split('\n')[0]
-
+    lines = request.split('\r\n')
     # get url
-    url = first_line.split(' ')[1]
-
-    for i in range(0,len(BLOCKED)):
-        if BLOCKED[i] in url:
-            printout("Blacklisted",first_line,client_addr)
-            conn.close()
-            sys.exit(1)
-
-
-    printout("Request",first_line,client_addr)
-    # print "URL:",url
-    # print
-    
-    # find the webserver and port
-    http_pos = url.find("://")          # find pos of ://
-    if (http_pos==-1):
-        temp = url
+    cmd = lines[0].split(' ')
+    if len(cmd) != 3:
+        print "PANIC: weird command: %r" % lines
+    if len(cmd) < 2:
+        return
+    method = cmd[0]
+    url = cmd[1]
+    if method != 'CONNECT':
+        dport = 80
+        url = urlparse.urlparse(url)
+        if url.scheme == 'https': dport = 443
+        port = url.port or dport
+        host = url.hostname
+        request = filter_headers(lines)
+        fd_client.write(request)
     else:
-        temp = url[(http_pos+3):]       # get the rest of url
+        host, port = url.split(':')
+        print "CONNECT request %d host %s port %s" % (counter,host, port) 
+        conn.send(CONNECT_REPLY)
     
-    port_pos = temp.find(":")           # find the port pos (if any)
-
-    # find end of web server
-    webserver_pos = temp.find("/")
-    if webserver_pos == -1:
-        webserver_pos = len(temp)
-
-    webserver = ""
-    port = -1
-    if (port_pos==-1 or webserver_pos < port_pos):      # default port
-        port = 80
-        webserver = temp[:webserver_pos]
-    else:       # specific port
-        port = int((temp[(port_pos+1):])[:webserver_pos-port_pos-1])
-        webserver = temp[:port_pos]
-
     try:
         # create a socket to connect to the web server
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  
-        s.connect((webserver, port))
-        s.send(request)         # send request to webserver
+        s.connect((host, int(port)))
+        if method == 'CONNECT':
+            # classic "man-in-the-middle" attack: establish SSL connection to both server and client, tricking
+            # each that they are talking directly to the other one
+            old_s = s
+            s = ssl.wrap_socket(old_s)
+            old_conn = conn
+            cert, key = create_cert(host)
+            conn = ssl.wrap_socket(conn,keyfile=key,certfile=cert,server_side=True)
+            filtered = False
+        else:
+            filtered = True
+            s.send(request)         # send request to webserver
         
         while 1:
-            # receive data from web server
-            data = s.recv(MAX_DATA_RECV)
-            
-            if (len(data) > 0):
-                # send to browser
-                conn.send(data)
-            else:
+            rfds, wfds, xfds = select.select([s,conn],[],[s,conn],20)
+            if s in rfds:
+                # receive data from web server
+                data = s.recv(MAX_DATA_RECV)
+                if (len(data) > 0):
+                    # send to browser
+                    conn.send(data)
+                    fd_server.write(data)
+                else:
+                    break
+            if conn in rfds:
+                data = conn.recv(MAX_DATA_RECV)
+                if (len (data) > 0):
+                    if not filtered:
+                        filtered = True
+                        data = filter_headers(data.split("\r\n"))
+                    s.send(data)
+                    fd_client.write(data)
+                else:
+                    break
+            if len(xfds) > 0:
                 break
-        s.close()
-        conn.close()
+            if rfds == [] and xfds == []:
+                # we timed out
+                break
     except socket.error, (value, message):
-        if s:
+        print "Peer Reset",lines,client_addr, value, message
+    finally:
+        try:
             s.close()
-        if conn:
             conn.close()
-        printout("Peer Reset",first_line,client_addr)
-        sys.exit(1)
+            fd_server.close()
+            fd_client.close()
+        except: pass
 #********** END PROXY_THREAD ***********
     
 if __name__ == '__main__':
