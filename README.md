@@ -7,7 +7,7 @@ This is useful for automating HTTPS websites. It is not useful for spying on oth
 
 ## Using the proxy
 
-By default the proxy runs on port 8080. In firefox go to Preferences/Advanced/Network/Connection Settings////
+By default the proxy runs on port 8080. In firefox go to Preferences/Advanced/Network/Connection Settings/.
 Select "Manual" proxy configuration, set the host to "127.0.0.1" and port to "8080"
 
 ## Saving files
@@ -31,26 +31,25 @@ in proxy.py)
 
 The relevant section of my `/etc/ssl/openssl.cnf` looks like (my `$HOME` is `/home/ian`):
 
-'''
-[ CA_default ]
+    [ CA_default ]
 
-dir		= /home/ian/certs		# Where everything is kept
-certs		= $dir/	# Where the issued certs are kept
-crl_dir		= $dir/crl		# Where the issued crl are kept
-database	= $dir/index.txt	# database index file.
-#unique_subject	= no			# Set to 'no' to allow creation of
+    dir		= /home/ian/certs		# Where everything is kept
+    certs		= $dir/	# Where the issued certs are kept
+    crl_dir		= $dir/crl		# Where the issued crl are kept
+    database	= $dir/index.txt	# database index file.
+    #unique_subject	= no			# Set to 'no' to allow creation of
 					# several ctificates with same subject.
-new_certs_dir	= $dir		# default place for new certs.
+    new_certs_dir	= $dir		# default place for new certs.
 
-certificate	= $dir/ca.pem 	# The CA certificate
-serial		= $dir/serial 		# The current serial number
-crlnumber	= $dir/crlnumber	# the current crl number
+    certificate	= $dir/ca.pem 	# The CA certificate
+    serial		= $dir/serial 		# The current serial number
+    crlnumber	= $dir/crlnumber	# the current crl number
 					# must be commented out to leave a V1 CRL
-#crl		= $dir/crl.pem 		# The current CRL
-private_key	= $dir/ca.key # The private key
-RANDFILE	= $dir/.rand	# private random number file
+    #crl		= $dir/crl.pem 		# The current CRL
+    private_key	= $dir/ca.key # The private key
+    RANDFILE	= $dir/.rand	# private random number file
 
-'''
+
 
 When proxy.py tries to do HTTPS for the first time, it will create this directory and 
 create the CA private key and certificate. The certificate file will be `$HOME/certs/ca.pem`.
